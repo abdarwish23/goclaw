@@ -122,11 +122,13 @@ services:
 
   # Web Dashboard UI
   dashboard:
-    image: ghcr.io/nextlevelbuilder/goclaw-dashboard:latest
+    build:
+      context: ./ui/web
+      dockerfile: Dockerfile
     container_name: goclaw-dashboard
     restart: unless-stopped
     ports:
-      - "${DASHBOARD_PORT:-3000}:3000"
+      - "${DASHBOARD_PORT:-3000}:80"
     environment:
       # Update these with your domain after Coolify configuration
       VITE_GOCLAW_API_BASE: ${VITE_GOCLAW_API_BASE:-https://api.openclaw.abdarwish.com}
