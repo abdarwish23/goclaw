@@ -1,7 +1,17 @@
-version: '3.8'
-
-# GoClaw Full Feature Deployment for Coolify
-# Includes: PostgreSQL + pgvector, Gateway, Dashboard, Redis, Browser, Sandbox
+# GoClaw VPS Deployment (8GB/4vCPU optimized)
+#
+# Uses shared Traefik reverse proxy (external traefik-public network)
+# Chrome browser disabled by default — enable with: --profile chrome
+#
+# Prerequisites:
+#   docker network create traefik-public
+#   Traefik running at /opt/traefik
+#
+# Required env vars in .env:
+#   POSTGRES_PASSWORD, GOCLAW_ENCRYPTION_KEY, GOCLAW_GATEWAY_TOKEN
+#   API_DOMAIN, DASHBOARD_DOMAIN
+#
+# Deploy: docker compose -f docker-compose.coolify.yml up -d --build
 
 services:
   # PostgreSQL 18 with pgvector extension
@@ -15,57 +25,78 @@ services:
       POSTGRES_DB: goclaw
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          memory: 1G
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U goclaw"]
       interval: 10s
       timeout: 5s
       retries: 5
     networks:
-      - goclaw-network
+      - goclaw-internal
 
   # Redis for caching and performance
   redis:
     image: redis:7-alpine
     container_name: goclaw-redis
     restart: unless-stopped
-    command: redis-server --appendonly yes
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     volumes:
       - redis_data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 384M
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
     networks:
-      - goclaw-network
+      - goclaw-internal
 
-  # Chrome browser for automation
+  # Chrome browser for automation (OPTIONAL — disabled by default)
+  # Enable with: docker compose -f docker-compose.coolify.yml --profile chrome up -d
   chrome:
     image: browserless/chrome:latest
     container_name: goclaw-chrome
     restart: unless-stopped
+    profiles:
+      - chrome
     environment:
       CONNECTION_TIMEOUT: 600000
-      MAX_CONCURRENT_SESSIONS: 10
+      MAX_CONCURRENT_SESSIONS: 2
       ENABLE_DEBUGGER: "false"
-    ports:
-      - "3001:3000"  # Browserless debugger UI
+    deploy:
+      resources:
+        limits:
+          memory: 1G
     networks:
-      - goclaw-network
+      - goclaw-internal
 
-  # GoClaw Gateway with ALL features enabled
+  # GoClaw Gateway — lean build (no Python/Node unless needed)
   goclaw:
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        ENABLE_PYTHON: "true"
+        ENABLE_PYTHON: "false"
         ENABLE_REDIS: "true"
         ENABLE_OTEL: "false"
     container_name: goclaw-gateway
     restart: unless-stopped
-    ports:
-      - "${GOCLAW_PORT:-18790}:18790"
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.goclaw-api.rule=Host(`${API_DOMAIN}`)"
+      - "traefik.http.routers.goclaw-api.entrypoints=websecure"
+      - "traefik.http.routers.goclaw-api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.goclaw-api.loadbalancer.server.port=18790"
     environment:
       # Database
       GOCLAW_POSTGRES_DSN: postgres://goclaw:${POSTGRES_PASSWORD:-goclaw}@postgres:5432/goclaw?sslmode=disable
@@ -77,7 +108,7 @@ services:
       # Redis
       GOCLAW_REDIS_URL: redis://redis:6379
 
-      # Browser automation
+      # Browser automation (only works if chrome profile is active)
       BROWSER_CDP_URL: ws://chrome:3000
 
       # Gateway configuration
@@ -99,9 +130,6 @@ services:
       GOCLAW_DASHSCOPE_API_KEY: ${GOCLAW_DASHSCOPE_API_KEY:-}
       GOCLAW_BAILIAN_API_KEY: ${GOCLAW_BAILIAN_API_KEY:-}
       GOCLAW_OLLAMA_CLOUD_API_KEY: ${GOCLAW_OLLAMA_CLOUD_API_KEY:-}
-
-      # Optional: Config file path
-      # GOCLAW_CONFIG: /app/config.json
     volumes:
       - ./config.json:/app/config.json:ro
       - goclaw_data:/app/data
@@ -117,8 +145,10 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 30s
     networks:
-      - goclaw-network
+      - goclaw-internal
+      - traefik-public
 
   # Web Dashboard UI
   dashboard:
@@ -127,16 +157,24 @@ services:
       dockerfile: Dockerfile
     container_name: goclaw-dashboard
     restart: unless-stopped
-    ports:
-      - "${DASHBOARD_PORT:-3000}:80"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.goclaw-dash.rule=Host(`${DASHBOARD_DOMAIN}`)"
+      - "traefik.http.routers.goclaw-dash.entrypoints=websecure"
+      - "traefik.http.routers.goclaw-dash.tls.certresolver=letsencrypt"
+      - "traefik.http.services.goclaw-dash.loadbalancer.server.port=80"
     environment:
-      # Update these with your domain after Coolify configuration
-      VITE_GOCLAW_API_BASE: ${VITE_GOCLAW_API_BASE:-https://api.openclaw.abdarwish.com}
-      VITE_GOCLAW_WS_BASE: ${VITE_GOCLAW_WS_BASE:-wss://api.openclaw.abdarwish.com}
+      VITE_GOCLAW_API_BASE: ${VITE_GOCLAW_API_BASE:-https://api.goclaw.abdarwish.com}
+      VITE_GOCLAW_WS_BASE: ${VITE_GOCLAW_WS_BASE:-wss://api.goclaw.abdarwish.com}
     depends_on:
       - goclaw
     networks:
-      - goclaw-network
+      - goclaw-internal
+      - traefik-public
 
 volumes:
   postgres_data:
@@ -151,5 +189,7 @@ volumes:
     driver: local
 
 networks:
-  goclaw-network:
+  goclaw-internal:
     driver: bridge
+  traefik-public:
+    external: true
