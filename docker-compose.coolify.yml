@@ -1,0 +1,155 @@
+version: '3.8'
+
+# GoClaw Full Feature Deployment for Coolify
+# Includes: PostgreSQL + pgvector, Gateway, Dashboard, Redis, Browser, Sandbox
+
+services:
+  # PostgreSQL 18 with pgvector extension
+  postgres:
+    image: pgvector/pgvector:pg18
+    container_name: goclaw-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: goclaw
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-goclaw}
+      POSTGRES_DB: goclaw
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U goclaw"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - goclaw-network
+
+  # Redis for caching and performance
+  redis:
+    image: redis:7-alpine
+    container_name: goclaw-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - goclaw-network
+
+  # Chrome browser for automation
+  chrome:
+    image: browserless/chrome:latest
+    container_name: goclaw-chrome
+    restart: unless-stopped
+    environment:
+      CONNECTION_TIMEOUT: 600000
+      MAX_CONCURRENT_SESSIONS: 10
+      ENABLE_DEBUGGER: "false"
+    ports:
+      - "3001:3000"  # Browserless debugger UI
+    networks:
+      - goclaw-network
+
+  # GoClaw Gateway with ALL features enabled
+  goclaw:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        ENABLE_PYTHON: "true"
+        ENABLE_REDIS: "true"
+        ENABLE_OTEL: "false"
+    container_name: goclaw-gateway
+    restart: unless-stopped
+    ports:
+      - "${GOCLAW_PORT:-18790}:18790"
+    environment:
+      # Database
+      GOCLAW_POSTGRES_DSN: postgres://goclaw:${POSTGRES_PASSWORD:-goclaw}@postgres:5432/goclaw?sslmode=disable
+
+      # Security - REQUIRED
+      GOCLAW_ENCRYPTION_KEY: ${GOCLAW_ENCRYPTION_KEY}
+      GOCLAW_GATEWAY_TOKEN: ${GOCLAW_GATEWAY_TOKEN}
+
+      # Redis
+      GOCLAW_REDIS_URL: redis://redis:6379
+
+      # Browser automation
+      BROWSER_CDP_URL: ws://chrome:3000
+
+      # Gateway configuration
+      GOCLAW_PORT: ${GOCLAW_PORT:-18790}
+      GOCLAW_HOST: 0.0.0.0
+
+      # LLM Provider API Keys
+      GOCLAW_OPENAI_API_KEY: ${GOCLAW_OPENAI_API_KEY:-}
+      GOCLAW_ANTHROPIC_API_KEY: ${GOCLAW_ANTHROPIC_API_KEY:-}
+      GOCLAW_OPENROUTER_API_KEY: ${GOCLAW_OPENROUTER_API_KEY:-}
+      GOCLAW_GROQ_API_KEY: ${GOCLAW_GROQ_API_KEY:-}
+      GOCLAW_GEMINI_API_KEY: ${GOCLAW_GEMINI_API_KEY:-}
+      GOCLAW_DEEPSEEK_API_KEY: ${GOCLAW_DEEPSEEK_API_KEY:-}
+      GOCLAW_MISTRAL_API_KEY: ${GOCLAW_MISTRAL_API_KEY:-}
+      GOCLAW_XAI_API_KEY: ${GOCLAW_XAI_API_KEY:-}
+      GOCLAW_MINIMAX_API_KEY: ${GOCLAW_MINIMAX_API_KEY:-}
+      GOCLAW_COHERE_API_KEY: ${GOCLAW_COHERE_API_KEY:-}
+      GOCLAW_PERPLEXITY_API_KEY: ${GOCLAW_PERPLEXITY_API_KEY:-}
+      GOCLAW_DASHSCOPE_API_KEY: ${GOCLAW_DASHSCOPE_API_KEY:-}
+      GOCLAW_BAILIAN_API_KEY: ${GOCLAW_BAILIAN_API_KEY:-}
+      GOCLAW_OLLAMA_CLOUD_API_KEY: ${GOCLAW_OLLAMA_CLOUD_API_KEY:-}
+
+      # Optional: Config file path
+      # GOCLAW_CONFIG: /app/config.json
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - goclaw_data:/app/data
+      - goclaw_skills:/app/skills
+      - goclaw_memory:/app/memory
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:18790/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - goclaw-network
+
+  # Web Dashboard UI
+  dashboard:
+    build:
+      context: ./ui/web
+      dockerfile: Dockerfile
+    container_name: goclaw-dashboard
+    restart: unless-stopped
+    ports:
+      - "${DASHBOARD_PORT:-3000}:80"
+    environment:
+      # Update these with your domain after Coolify configuration
+      VITE_GOCLAW_API_BASE: ${VITE_GOCLAW_API_BASE:-https://api.openclaw.abdarwish.com}
+      VITE_GOCLAW_WS_BASE: ${VITE_GOCLAW_WS_BASE:-wss://api.openclaw.abdarwish.com}
+    depends_on:
+      - goclaw
+    networks:
+      - goclaw-network
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  goclaw_data:
+    driver: local
+  goclaw_skills:
+    driver: local
+  goclaw_memory:
+    driver: local
+
+networks:
+  goclaw-network:
+    driver: bridge
