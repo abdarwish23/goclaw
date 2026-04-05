@@ -25,15 +25,16 @@ type credentialProvider interface {
 }
 
 // imageGenProviderPriority is the default order for image generation providers.
-var imageGenProviderPriority = []string{"openrouter", "gemini", "openai", "minimax", "dashscope"}
+var imageGenProviderPriority = []string{"openrouter", "gemini", "openai", "minimax", "dashscope", "byteplus"}
 
 // imageGenModelDefaults maps provider names to default image generation models.
 var imageGenModelDefaults = map[string]string{
 	"openrouter": "google/gemini-2.5-flash-image",
-	"openai":     "dall-e-3",
+	"openai":     "gpt-image-1.5",
 	"gemini":     "gemini-2.5-flash-image",
 	"minimax":    "image-01",
 	"dashscope":  "wan2.6-image",
+	"byteplus":   "seedream-5-0-260128",
 }
 
 // CreateImageTool generates images using an image generation API.
@@ -122,7 +123,7 @@ func (t *CreateImageTool) Execute(ctx context.Context, args map[string]any) *Res
 		slog.Info("create_image: file saved", "path", imagePath, "size", fi.Size(), "data_len", len(chainResult.Data))
 	}
 
-	result := &Result{ForLLM: fmt.Sprintf("MEDIA:%s", imagePath)}
+	result := &Result{ForLLM: fmt.Sprintf("MEDIA:%s\nUse the EXACT filename when referencing: %s", imagePath, filepath.Base(imagePath))}
 	result.Media = []bus.MediaFile{{Path: imagePath, MimeType: "image/png"}}
 	result.Deliverable = fmt.Sprintf("[Generated image: %s]\nPrompt: %s", filepath.Base(imagePath), prompt)
 	result.Provider = chainResult.Provider
@@ -153,6 +154,8 @@ func (t *CreateImageTool) callProvider(ctx context.Context, cp credentialProvide
 		return callMinimaxImageGen(ctx, cp.APIKey(), cp.APIBase(), model, prompt, params)
 	case "dashscope":
 		return callDashScopeImageGen(ctx, cp.APIKey(), cp.APIBase(), model, prompt, params)
+	case "byteplus":
+		return callBytePlusImageGen(ctx, cp.APIKey(), cp.APIBase(), model, prompt, params)
 	default:
 		return t.callStandardImageGenAPI(ctx, cp.APIKey(), cp.APIBase(), model, prompt, params)
 	}
